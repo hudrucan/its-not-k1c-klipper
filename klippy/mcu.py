@@ -1229,6 +1229,9 @@ class MCUConnectHelper:
             self.handle_non_critical_disconnect()
             return
         self._is_timeout = True
+        if self.is_non_critical:
+            self.handle_non_critical_disconnect()
+            return
         logging.info("Timeout with MCU '%s' (eventtime=%f)",
                      self._name, eventtime)
         self._printer.invoke_shutdown("Lost communication with MCU '%s'" % (
@@ -1557,3 +1560,5 @@ def get_printer_mcu(printer, name):
     if name == 'mcu':
         return printer.lookup_object(name)
     return printer.lookup_object('mcu ' + name)
+
+

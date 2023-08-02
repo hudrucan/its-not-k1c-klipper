@@ -202,7 +202,6 @@ class SerialReader:
             ret = self._start_session(serial_dev)
             if ret:
                 break
-
     def check_connect(self, serialport, baud, rts=True):
         serial_dev = serial.Serial(baudrate=baud, timeout=0, exclusive=False)
         serial_dev.port = serialport
