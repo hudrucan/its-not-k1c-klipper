@@ -3,7 +3,7 @@
 # Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import math, logging, importlib
+import math, logging, importlib, os, json
 import mcu, chelper, kinematics.extruder
 
 # Common suffixes: _d is distance (in mm), _v is velocity (in
@@ -61,7 +61,17 @@ class Move:
         self.next_junction_v2 = min(self.next_junction_v2, speed**2)
     def move_error(self, msg="Move out of range"):
         ep = self.end_pos
-        m = "%s: %.3f %.3f %.3f [%.3f]" % (msg, ep[0], ep[1], ep[2], ep[3])
+        #m = "%s: %.3f %.3f %.3f [%.3f]" % (msg, ep[0], ep[1], ep[2], ep[3])
+        if msg == "Must home axis first":
+            code_key = "key95"
+        elif msg == "Must home first":
+            code_key = "key242"
+        elif msg == "Extrude when no extruder present":
+            code_key = "key114"
+        else:
+            code_key = "key243"
+        m = """{"code":"%s","msg":"%s: %.3f %.3f %.3f [%.3f]", "values":[%.3f, %.3f, %.3f, %.3f]}""" % (
+            code_key, msg, ep[0], ep[1], ep[2], ep[3], ep[0], ep[1], ep[2], ep[3])
         return self.toolhead.printer.command_error(m)
     def calc_junction(self, prev_move):
         if not self.is_kinematic_move or not prev_move.is_kinematic_move:
@@ -254,7 +264,38 @@ class ToolHead:
         # Register handlers
         self.printer.register_event_handler("klippy:shutdown",
                                             self._handle_shutdown)
-    # Print time tracking
+        # Load some default modules
+        modules = ["gcode_move", "homing", "idle_timeout", "statistics",
+                   "manual_probe", "tuning_tower"]
+        for module_name in modules:
+            self.printer.load_object(config, module_name)
+        self.z_pos_filepath = "/usr/data/creality/userdata/config/z_pos.json"
+        self.z_pos = self.get_z_pos()
+    def get_z_pos(self):
+        z_pos = 0
+        if os.path.exists(self.z_pos_filepath):
+            try:
+                with open(self.z_pos_filepath, "r") as f:
+                    z_pos = float(json.loads(f.read()).get("z_pos", 0))
+            except Exception as err:
+                logging.error(err)
+        return z_pos
+    # Print time and flush tracking
+    def _advance_flush_time(self, flush_time):
+        flush_time = max(flush_time, self.last_flush_time)
+        # Generate steps via itersolve
+        sg_flush_ceil = max(flush_time, self.print_time - self.kin_flush_delay)
+        sg_flush_time = min(flush_time + STEPCOMPRESS_FLUSH_TIME, sg_flush_ceil)
+        for sg in self.step_generators:
+            sg(sg_flush_time)
+        # Free trapq entries that are no longer needed
+        free_time = sg_flush_time - self.kin_flush_delay
+        self.trapq_finalize_moves(self.trapq, free_time)
+        self.extruder.update_move_time(free_time)
+        # Flush stepcompress and mcu steppersync
+        for m in self.all_mcus:
+            m.flush_moves(flush_time)
+        self.last_flush_time = flush_time
     def _advance_move_time(self, next_print_time):
         self.print_time = max(self.print_time, next_print_time)
     def _calc_print_time(self):
@@ -388,11 +429,23 @@ class ToolHead:
         self.commanded_pos[:3] = newpos[:3]
         self.kin.set_position(newpos, homing_axes)
         self.printer.send_event("toolhead:set_position")
-    def limit_next_junction_speed(self, speed):
-        last_move = self.lookahead.get_last()
-        if last_move is not None:
-            last_move.limit_next_junction_speed(speed)
+    def record_z_pos(self, commanded_pos_z):
+        curtime = self.printer.get_reactor().monotonic()
+        kin_status = self.kin.get_status(curtime)
+        if ('z' in kin_status['homed_axes']):
+            try:
+                if abs(commanded_pos_z-self.z_pos) > 5:
+                    self.z_pos = commanded_pos_z
+                    with open(self.z_pos_filepath, "w") as f:
+                        f.write(json.dumps({"z_pos": commanded_pos_z}))
+                        f.flush()
+                    print_stats = self.printer.lookup_object('print_stats', None)
+                    print_stats.z_pos = self.z_pos
+                    logging.info("record_z_pos:%s" % commanded_pos_z)
+            except Exception as err:
+                logging.error(err)
     def move(self, newpos, speed):
+        self.record_z_pos(newpos[2])
         move = Move(self, self.commanded_pos, newpos, speed)
         if not move.move_d:
             return
@@ -546,50 +599,23 @@ class ToolHead:
         if min_cruise_ratio is not None:
             self.min_cruise_ratio = min_cruise_ratio
         self._calc_junction_deviation()
-        return (self.max_velocity, self.max_accel,
-                self.square_corner_velocity, self.min_cruise_ratio)
-
-# Support common G-Code commands relative to the toolhead
-class ToolHeadCommandHelper:
-    def __init__(self, config):
-        self.printer = config.get_printer()
-        self.toolhead = self.printer.lookup_object("toolhead")
-        # Register commands
-        gcode = self.printer.lookup_object('gcode')
-        gcode.register_command('G4', self.cmd_G4)
-        gcode.register_command('M400', self.cmd_M400)
-        gcode.register_command('SET_VELOCITY_LIMIT',
-                               self.cmd_SET_VELOCITY_LIMIT,
-                               desc=self.cmd_SET_VELOCITY_LIMIT_help)
-        gcode.register_command('M204', self.cmd_M204)
-    def cmd_G4(self, gcmd):
-        # Dwell
-        delay = gcmd.get_float('P', 0., minval=0.) / 1000.
-        self.toolhead.dwell(delay)
-    def cmd_M400(self, gcmd):
-        # Wait for current moves to finish
-        self.toolhead.wait_moves()
-    cmd_SET_VELOCITY_LIMIT_help = "Set printer velocity limits"
-    def cmd_SET_VELOCITY_LIMIT(self, gcmd):
-        max_velocity = gcmd.get_float('VELOCITY', None, above=0.)
-        max_accel = gcmd.get_float('ACCEL', None, above=0.)
-        square_corner_velocity = gcmd.get_float(
-            'SQUARE_CORNER_VELOCITY', None, minval=0.)
-        min_cruise_ratio = gcmd.get_float(
-            'MINIMUM_CRUISE_RATIO', None, minval=0., below=1.)
-        mv, ma, scv, mcr = self.toolhead.set_max_velocities(
-            max_velocity, max_accel, square_corner_velocity, min_cruise_ratio)
-        msg = ("max_velocity: %.6f\n"
-               "max_accel: %.6f\n"
-               "minimum_cruise_ratio: %.6f\n"
-               "square_corner_velocity: %.6f" % (mv, ma, mcr, scv))
-        self.printer.set_rollover_info("toolhead", "toolhead: %s" % (msg,))
-        if (max_velocity is None and max_accel is None
-            and square_corner_velocity is None and min_cruise_ratio is None):
+        #msg = ("max_velocity: %.6f\n"
+         #      "max_accel: %.6f\n"
+         #      "max_accel_to_decel: %.6f\n"
+         #      "square_corner_velocity: %.6f" % (
+         #          self.max_velocity, self.max_accel,
+         #          self.requested_accel_to_decel,
+         #          self.square_corner_velocity))
+        #self.printer.set_rollover_info("toolhead", "toolhead: %s" % (msg,))
+        if (max_velocity is None and
+            max_accel is None and
+            square_corner_velocity is None and
+            requested_accel_to_decel is None):
             gcmd.respond_info(msg, log=False)
     def cmd_M204(self, gcmd):
         # Use S for accel
         accel = gcmd.get_float('S', None, above=0.)
+        cmd = "M204 S%s" % accel
         if accel is None:
             # Use minimum of P and T for accel
             p = gcmd.get_float('P', None, above=0.)
@@ -599,7 +625,19 @@ class ToolHeadCommandHelper:
                                   % (gcmd.get_commandline(),))
                 return
             accel = min(p, t)
-        self.toolhead.set_max_velocities(None, accel, None, None)
+        self.max_accel = accel
+        self._calc_junction_deviation()
+        v_sd = self.printer.lookup_object('virtual_sdcard', None)
+        print_stats = self.printer.lookup_object('print_stats', None)
+        if print_stats and print_stats.state == "printing" and v_sd and v_sd.count_M204 < 3 and os.path.exists(v_sd.print_file_name_path):
+            v_sd.count_M204 += 1
+            with open(v_sd.print_file_name_path, "r") as f:
+                result = (json.loads(f.read()))
+                result["M204"] = cmd
+            with open(v_sd.print_file_name_path, "w") as f:
+                f.write(json.dumps(result))
+                f.flush()
+            logging.info("Record cmd_M204")
 
 def add_printer_objects(config):
     printer = config.get_printer()
