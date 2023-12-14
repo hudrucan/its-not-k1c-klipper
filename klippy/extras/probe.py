@@ -447,7 +447,12 @@ class ProbePointsHelper:
         # Internal probing state
         self.lift_speed = self.speed
         self.probe_offsets = (0., 0., 0.)
-        self.manual_results = []
+        self.results = []
+        self.probe_type = ""
+        if config.has_section('prtouch_v2'):
+            self.probe_type = "prtouch_v2"
+        elif config.has_section('bltouch'):
+            self.probe_type = "bltouch"
     def minimum_points(self,n):
         if len(self.probe_points) < n:
             raise self.printer.config_error(
@@ -475,21 +480,25 @@ class ProbePointsHelper:
         if is_first:
             # Use full speed to first probe position
             speed = self.speed
-        self._move([None, None, self.horizontal_move_z], speed)
-    def _invoke_callback(self, results):
-        # Flush lookahead queue
-        toolhead = self.printer.lookup_object('toolhead')
-        toolhead.get_last_move_time()
-        # Invoke callback
-        res = self.finalize_callback(self.probe_offsets, results)
-        return res != "retry"
-    def _move_next(self, probe_num):
+        if self.probe_type != "prtouch_v2":
+            toolhead.manual_move([None, None, self.horizontal_move_z], speed)
+        # Check if done probing
+        if len(self.results) >= len(self.probe_points):
+            toolhead.get_last_move_time()
+            res = self.finalize_callback(self.probe_offsets, self.results)
+            if res != "retry":
+                return True
+            self.results = []
         # Move to next XY probe point
         nextpos = list(self.probe_points[probe_num])
         if self.use_offsets:
             nextpos[0] -= self.probe_offsets[0]
             nextpos[1] -= self.probe_offsets[1]
-        self._move(nextpos, self.speed)
+        if self.probe_type == "prtouch_v2":
+            self.printer.lookup_object('probe').mcu_probe.run_to_next(nextpos)
+        else:
+            toolhead.manual_move(nextpos, self.speed)
+        return False
     def start_probe(self, gcmd):
         manual_probe.verify_no_manual_probe(self.printer)
         # Lookup objects
