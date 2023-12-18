@@ -97,6 +97,8 @@ defs_trapq = """
         double x_r, y_r, z_r;
     };
 
+    struct trapq *trapq_alloc(void);
+    void trapq_free(struct trapq *tq);
     void trapq_append(struct trapq *tq, double print_time
         , double accel_t, double cruise_t, double decel_t
         , double start_pos_x, double start_pos_y, double start_pos_z
@@ -112,7 +114,6 @@ defs_trapq = """
 
 defs_kin_cartesian = """
     struct stepper_kinematics *cartesian_stepper_alloc(char axis);
-    struct stepper_kinematics *cartesian_reverse_stepper_alloc(char axis);
 """
 defs_kin_generic_cartesian = """
     struct stepper_kinematics *generic_cartesian_stepper_alloc(double a_x
@@ -168,6 +169,14 @@ defs_kin_shaper = """
         , struct stepper_kinematics *orig_sk);
     void input_shaper_update_sk(struct stepper_kinematics *sk);
     struct stepper_kinematics * input_shaper_alloc(void);
+"""
+
+defs_kin_idex = """
+    void dual_carriage_set_sk(struct stepper_kinematics *sk
+        , struct stepper_kinematics *orig_sk);
+    int dual_carriage_set_transform(struct stepper_kinematics *sk
+        , char axis, double scale, double offs);
+    struct stepper_kinematics * dual_carriage_alloc(void);
 """
 
 defs_serialqueue = """
@@ -315,7 +324,6 @@ def get_ffi():
                                                       logging_callback)
         FFI_lib.set_python_logging_callback(pyhelper_logging_callback)
     return FFI_main, FFI_lib
-
 
 
 ######################################################################
