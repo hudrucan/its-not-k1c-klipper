@@ -212,9 +212,9 @@ class FixedFreqReader:
         self.samples_per_block = MAX_BULK_MSG_SIZE // self.bytes_per_sample
         self.last_sequence = self.max_query_duration = 0
         self.last_overflows = 0
-        self.bulk_queue = self.oid = self.query_status_cmd = None
-    def setup_query_command(self, msgformat, oid, cq):
-        # Lookup sensor query command (that responds with sensor_bulk_status)
+        self.mcu = self.oid = self.query_status_cmd = None
+    def setup_query_command(self, mcu, msgformat, oid, cq=None):
+        self.mcu = mcu
         self.oid = oid
         self.query_status_cmd = self.mcu.lookup_query_command(
             msgformat, "sensor_bulk_status oid=%c clock=%u query_ticks=%u"
