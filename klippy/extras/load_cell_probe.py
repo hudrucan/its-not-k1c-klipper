@@ -850,8 +850,6 @@ class LoadCellProbeConfigHelper:
         sps = self._sensor.get_samples_per_second()
         self._pullback_speed_param = floatParamHelper(config, 'pullback_speed',
             minval=0.1, maxval=1.0, default=sps * 0.001)
-        self._bad_tap_retries_param = intParamHelper(config, 'bad_tap_retries',
-            1, minval=0, maxval=10)
 
     def get_tare_samples(self, gcmd=None):
         tare_time = self._tare_time_param.get(gcmd)
@@ -869,9 +867,6 @@ class LoadCellProbeConfigHelper:
 
     def get_pullback_distance(self, gcmd=None):
         return self._pullback_distance_param.get(gcmd)
-
-    def get_bad_tap_retries(self, gcmd=None):
-        return self._bad_tap_retries_param.get(gcmd)
 
     def get_rest_time(self):
         return self._rest_time
@@ -1119,18 +1114,25 @@ class TappingMove:
         self._last_result = None
         self._is_last_result_valid = False
 
+    # Perform the pullback move and returns the time when the move will end
+    def pullback_move(self, gcmd):
+        toolhead = self._printer.lookup_object('toolhead')
+        pullback_pos = toolhead.get_position()
+        pullback_pos[2] += self._config_helper.get_pullback_distance(gcmd)
+        pos = [None, None, pullback_pos[2]]
+        toolhead.manual_move(pos, self._config_helper.get_pullback_speed(gcmd))
+        toolhead.flush_step_generation()
+        pullback_end = toolhead.get_last_move_time()
+        return pullback_end
+
     # perform a probing move and a pullback move
     def run_tap(self, gcmd):
-        # do the descending move
+        # do the probing/homing move
         epos, collector = self._load_cell_probing_move.probing_move(gcmd)
+        # do the pullback move
+        pullback_end_time = self.pullback_move(gcmd)
         # collect samples from the tap
         results = collector.collect_until(pullback_end_time)
-        # calculate how long we waited to get the data
-        t_end = self._printer.get_reactor().monotonic()
-        t_end = self._mcu.estimated_print_time(t_end)
-        logging.error(f"t_start {pullback_end_time}, t_end: {t_end}")
-        collection_time = t_end - pullback_end_time
-        # check for data errors
         samples = check_sensor_errors(results, self._printer)
         trigger_force = self._config_helper.get_trigger_force_grams(gcmd)
         # Analyze the tap data
