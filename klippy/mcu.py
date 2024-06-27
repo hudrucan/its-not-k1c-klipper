@@ -762,14 +762,12 @@ class MCU:
             cb()
         self._config_cmds.insert(0, "allocate_oids count=%d"
                                  % (self._oid_count,))
-        
         # Resolve pin names
         ppins = self._printer.lookup_object('pins')
         pin_resolver = ppins.get_pin_resolver(self._name)
         for cmdlist in (self._config_cmds, self._restart_cmds, self._init_cmds):
             for i, cmd in enumerate(cmdlist):
                 cmdlist[i] = pin_resolver.update_command(cmd)
-                logging.info("command: %s", cmdlist[i])
         # Calculate config CRC
         encoded_config = '\n'.join(self._config_cmds).encode()
         config_crc = zlib.crc32(encoded_config) & 0xffffffff
