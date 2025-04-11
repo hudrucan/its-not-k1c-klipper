@@ -312,9 +312,17 @@ def logging_callback(msg):
 def get_ffi():
     global FFI_main, FFI_lib, pyhelper_logging_callback
     if FFI_lib is None:
-        # Check if library needs to be built, and build if so
-        destlib = check_build_c_library()
-        # Open library
+        srcdir = os.path.dirname(os.path.realpath(__file__))
+        srcfiles = get_abs_files(srcdir, SOURCE_FILES)
+        ofiles = get_abs_files(srcdir, OTHER_FILES)
+        destlib = get_abs_files(srcdir, [DEST_LIB])[0]
+#        if check_build_code(srcfiles + ofiles + [__file__], destlib):
+#            if check_gcc_option(SSE_FLAGS):
+#                cmd = "%s %s %s" % (GCC_CMD, SSE_FLAGS, COMPILE_ARGS)
+#            else:
+#                cmd = "%s %s" % (GCC_CMD, COMPILE_ARGS)
+#            logging.info("Building C code module %s", DEST_LIB)
+#            do_build_code(cmd % (destlib, " ".join(srcfiles)))
         FFI_main = cffi.FFI()
         for d in defs_all:
             FFI_main.cdef(d)
