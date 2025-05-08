@@ -10,15 +10,10 @@ from . import probe, sos_filter, load_cell, hx71x, ads1220
 ######## Types
 
 
-class BadTapModule(object):
+######## Types
 
-    def is_bad_tap(self, tap_analysis):
-        return False
-
-
-class NozzleCleanerModule(object):
-
-    def clean_nozzle(self):
+class TapClassifierModule(object):
+    def classify(self, tap_analysis):
         pass
 
 ######## Types
@@ -35,7 +30,6 @@ class NozzleCleanerModule(object):
 
 # Capture and preserve a Trapezoidal Move as a python type
 class TrapezoidalMove(object):
-
     def __init__(self, move):
         # copy c data to python memory
         self.print_time = float(move.print_time)
@@ -570,17 +564,20 @@ class ForcePoint(object):
         return {'time': self.time, 'force': self.force}
 
 
+# slope/intercept based line where x is time and y is force
 class ForceLine(object):
-
     def __init__(self, slope, intercept):
-        self.slope = slope
-        self.intercept = intercept
+        self.slope = float(slope)
+        self.intercept = float(intercept)
 
-    # measure angles between lines at the 1g == 1ms scale
+    # measure angles between lines at the 25g = 0.1s (100ms) scale
+    # Note: this is the same scale used by Prusa
     # returns +/- 0-180. Positive values represent clockwise rotation
-    def angle(self, line, time_scale=0.001):
-        radians = (math.atan2(self.slope * time_scale, 1) -
-                   math.atan2(line.slope * time_scale, 1))
+    def angle(self, line, time_scale=0.1, gram_scale=25):
+        scaling_factor = time_scale / gram_scale
+        this_slope = self.slope * scaling_factor
+        other_slope = line.slope * scaling_factor
+        radians = (math.atan2(this_slope, 1) - math.atan2(other_slope, 1))
         return math.degrees(radians)
 
     def find_force(self, time):
@@ -592,6 +589,10 @@ class ForceLine(object):
     def intersection(self, line):
         numerator = -self.intercept + line.intercept
         denominator = self.slope - line.slope
+        # lines are parallel, will not intersect
+        if denominator == 0.:
+            # to get debuggable data we want to return a clearly bad value here
+            return ForcePoint(0., 0.)
         intersection_time = numerator / denominator
         intersection_force = self.find_force(intersection_time)
         return ForcePoint(intersection_time, intersection_force)
@@ -600,408 +601,426 @@ class ForceLine(object):
         return {'slope': self.slope, 'intercept': self.intercept}
 
 
-# convert double to signed fixed point Q12.19 integer
-Q12_INT_BITS = 12
-Q12_FRAC_BITS = (32 - (1 + Q12_INT_BITS))
-
-
-def as_fixedQ12(val):
-    return int(val * (2**Q12_FRAC_BITS))
-
-
-# Digital filter designer and container
-class DigialFilter:
-
-    def __init__(self,
-                 sps,
-                 cfg_error,
-                 highpass=None,
-                 lowpass=None,
-                 notches=None,
-                 notch_quality=2.0):
-        self.filter_sections = None
-        self.sample_frequency = sps
-        if not (highpass or lowpass or notches):
-            return
-        try:
-            import scipy.signal as signal
-        except:
-            raise cfg_error("Filters require the SciPy module")
-        sos = []
-        if highpass:
-            sos.append(self._butter(highpass, "highpass"))
-        for notch_freq in notches:
-            sos.append(self._notch(notch_freq, notch_quality))
-        if lowpass:
-            sos.append(self._butter(lowpass, "lowpass"))
-        import numpy as np
-        self.filter_sections = np.vstack(sos)
-
-    def _butter(self, frequency, btype):
-        import scipy.signal as signal
-        return signal.butter(2,
-                             Wn=frequency,
-                             btype=btype,
-                             fs=self.sample_frequency,
-                             output='sos')
-
-    def _notch(self, freq, quality):
-        import scipy.signal as signal
-        b, a = signal.iirnotch(freq, Q=quality, fs=self.sample_frequency)
-        return signal.tf2sos(b, a)
-
-    # convert the sos matrix to fixed point Q12 format
-    def sos_fixed_q12(self):
-        if not self.has_filters():
-            return None
-        sos_fixed = []
-        for section in self.filter_sections:
-            fixed_section = []
-            for col, coeff in enumerate(section):
-                if col != 3:  # omit column 3, its always 1.0 and not used
-                    fixed_section.append(as_fixedQ12(coeff))
-            sos_fixed.append(fixed_section)
-        return sos_fixed
-
-    # apply the forwards+backwards "filter-filter" algorithm to data
-    def filtfilt(self, data):
-        if not self.has_filters():
-            return data
-        import scipy.signal as signal
-        return signal.sosfiltfilt(self.filter_sections, data)
-
-    # true if the filter is configured with any filter sections
-    def has_filters(self):
-        return self.filter_sections is not None
-
-
 #########################
 # Math Support Functions
 
+# helper class for working with a time/force graph
+# work with subsections to find elbows and best fit lines
+class ForceGraph:
+    def __init__(self, time_nd_64, force_nd_64):
+        self.time = time_nd_64
+        self.force = force_nd_64
+        # prepare arrays for numpy to save re-allocation costs
+        ones = np.ones(len(time_nd_64), dtype=np.float64)
+        self._time_nd = np.vstack([time_nd_64, ones]).T
 
-# compute the index in the time array when some value was surpassed
-def index_near(time, instant):
-    import numpy as np
-    return int(np.argmax(np.asarray(time) >= instant) or len(time) - 1)
+    # Least Squares on x[] y[] points, returns ForceLine
+    def _lstsq_line(self, x_stacked, y):
+        mx, b = np.linalg.lstsq(x_stacked, y, rcond=None)[0]
+        return mx, b
 
+    # returns the residual sum for a best fit line
+    def _lstsq_error(self, x_stacked, y):
+        residuals = np.linalg.lstsq(x_stacked, y, rcond=None)[1]
+        return residuals[0] if residuals.size > 0 else 0
 
-# Least Squares on x[] y[] points, returns ForceLine
-def lstsq_line(x, y):
-    import numpy as np
-    x = np.asarray(x)
-    y = np.asarray(y)
-    x_stacked = np.vstack([x, np.ones(len(x))]).T
-    mx, b = np.linalg.lstsq(x_stacked, y, rcond=None)[0]
-    return ForceLine(mx, b)
+    # split a chunk of the graph in to 2 lines at i and return the residual sum
+    def _two_lines_error(self, time_t, force, i):
+        r1 = self._lstsq_error(time_t[0:i], force[0:i])
+        r2 = self._lstsq_error(time_t[i:], force[i:])
+        return r1 + r2
 
+    # search exhaustively for the 2 lines that best fit the data
+    # return the elbow index
+    def _two_lines_best_fit(self, time_t, force):
+        best_error = float('inf')
+        best_fit_index = -1
+        for i in range(1, len(force) - 2):
+            error = self._two_lines_error(time_t, force, i)
+            if error < best_error:
+                best_error = error
+                best_fit_index = i
+        return best_fit_index
 
-# Kneedle algorithm, finds absolute max elbow points
-def find_kneedle(x, y):
-    import numpy as np
-    x_coords = [x[0], x[-1]]
-    y_coords = [y[0], y[-1]]
-    line = lstsq_line(x_coords, y_coords)
-    # now compute the Y of the line value for every x
-    fit_y = []
-    for time in x:
-        fit_y.append(line.find_force(time))
-    fit_y = np.asarray(fit_y)
-    delta_y = np.absolute(fit_y - y)
-    return np.argmax(delta_y)
+    # slice the internal nd arrays
+    def _slice_nd(self, start_idx, end_idx):
+        t = self._time_nd[start_idx:end_idx]
+        f = self.force[start_idx:end_idx]
+        return t, f
 
+    def find_elbow(self, start_idx, end_idx):
+        t, f = self._slice_nd(start_idx, end_idx)
+        elbow_index = self._two_lines_best_fit(t, f)
+        return start_idx + elbow_index
 
-def lstsq_error(x, y):
-    import numpy as np
-    x = np.asarray(x)
-    y = np.asarray(y)
-    x_stacked = np.vstack([x, np.ones(len(x))]).T
-    residual = np.linalg.lstsq(x_stacked, y, rcond=None)[1][0]
-    return residual
+    # finds the index nearest to a time
+    def index_near(self, instant):
+        idx = int(np.searchsorted(self.time, instant))
+        return min(idx, len(self.time) - 1)
 
+    # construct a line from 2 points
+    def _points_to_line(self, a, b):
+        t = np.asarray([[a.time, 1], [b.time, 1]], dtype=np.float64)
+        f = np.asarray([a.force, b.force], dtype=np.float64)
+        mx, b = self._lstsq_line(t, f)
+        return ForceLine(mx, b)
 
-def find_two_lines_best_fit(x, y, search_direction=-1):
-    sweep = range(2, len(x) - 2)
-    if search_direction == -1:
-        sweep = reversed(sweep)
-    min_error = float('inf')
-    for i in sweep:
-        r1 = lstsq_error(x[0:i], y[0:i])
-        r2 = lstsq_error(x[i:], y[i:])
-        error = r1 + r2
-        if error < min_error:
-            min_error = error
+    # construct a line using a subset of the graph
+    def line(self, start_idx, end_idx):
+        t, f = self._slice_nd(start_idx, end_idx)
+        mx, b = self._lstsq_line(t, f)
+        return ForceLine(mx, b)
+
+    # given a line and a range, calculate the standard deviation of the noise
+    def noise_std(self, start_idx, end_idx, line):
+        f = self.force[start_idx:end_idx]
+        t = self.time[start_idx:end_idx]
+        noise = []
+        for i in range(len(f)):
+            noise.append(f[i] - line.find_force(t[i]))
+        return np.std(noise, dtype=np.float64)
+
+    # true if the reference force won't be confused for noise in the graph chunk
+    # reference force must be more than 3 standard deviations away from the line
+    # at the reference index
+    def is_clear_signal(self, start_idx, end_idx, line, reference_idx,
+            force_idx):
+        noise = self.noise_std(start_idx, end_idx, line)
+        noise_3_std = noise * 3
+        base_force = line.find_force(self.time[reference_idx])
+        return abs(base_force - self.force[force_idx]) > noise_3_std
+
+    # return the first index that exceeds the median force between
+    # start and end index
+    def _split_by_force(self, start_idx, end_idx):
+        start_f = self.force[start_idx]
+        end_f = self.force[end_idx]
+        median_f = (start_f + end_f) / 2.
+        scan = range(start_idx, end_idx)
+        # if force is ascending, swap the scan direction
+        if start_f > end_f:
+            scan = reversed(scan)
+        for i in scan:
+            if self.force[i] > median_f:
+                return i
+        return None
+
+    # break a tap event down into 6 points and 5 lines:
+    #           |*----*\
+    #           |       \
+    #    *-----*|        \*-----*
+    def tap_decompose(self, homing_end_time, pullback_start_time,
+            pullback_cruise_time, pullback_cruise_duration):
+        homing_end_idx = self.index_near(homing_end_time)
+        # use the pullback duration to trim the amount of approach data used
+        homing_start_time = homing_end_time - pullback_cruise_duration
+        homing_start_idx = self.index_near(homing_start_time)
+        # locate the point where the probe made contact with the bed
+        contact_elbow_idx = self.find_elbow(homing_start_idx, homing_end_idx)
+
+        pullback_start_idx = self.index_near(pullback_start_time)
+        pullback_cruise_idx = self.index_near(pullback_cruise_time)
+        # limit use of additional data after the pullback move ends
+        pullback_end_time = (
+                pullback_cruise_time + (pullback_cruise_duration * 1.5))
+        pullback_end_idx = self.index_near(pullback_end_time)
+
+        # l1 is the approach line
+        l1 = self.line(homing_start_idx, contact_elbow_idx)
+        # sometime after contact_elbow_idx is the peak force and the start of
+        # the dwell line
+        dwell_end = self.time[contact_elbow_idx] + pullback_cruise_duration
+        dwell_end_idx = min(pullback_start_idx, self.index_near(dwell_end))
+        dwell_start_idx = self.find_elbow(contact_elbow_idx, dwell_end_idx)
+        # l2 is the compression line
+        # also +1 the last index in case its sequential [1, 2]
+        l2 = self.line(contact_elbow_idx, dwell_start_idx + 1)
+        # l3 is the dwell line
+        l3 = self.line(dwell_start_idx, pullback_start_idx)
+
+        # find the approximate elbow location
+        break_contact_idx = self.find_elbow(pullback_cruise_idx,
+            pullback_end_idx)
+        # l5 is the line after decompression ends
+        l5 = self.line(break_contact_idx, pullback_end_idx)
+        # split the points between the elbow and the start of movement by force
+        midpoint_idx = self._split_by_force(pullback_cruise_idx,
+            break_contact_idx)
+        # elbow finding success depends on their being good signal-to-noise
+        # this checks if there will be enough clear data to analyze
+        use_curve_optimization = False
+        if midpoint_idx is not None:
+            clear_dwell = self.is_clear_signal(dwell_start_idx, dwell_end_idx,
+                l3, dwell_end_idx, midpoint_idx - 1)
+            clear_decomp = self.is_clear_signal(break_contact_idx,
+                pullback_end_idx, l5, break_contact_idx, midpoint_idx)
+            use_curve_optimization = clear_dwell and clear_decomp
+        if use_curve_optimization:
+            # perform iterative refinement
+            l4_start = self.line(pullback_cruise_idx, midpoint_idx)
+            # real break contact index
+            break_contact_idx = self.find_elbow(midpoint_idx, pullback_end_idx)
+            l4_end = self.line(midpoint_idx, break_contact_idx)
+            l5 = self.line(break_contact_idx, pullback_end_idx)
+            # a synthetic l4 is built from 2 points:
+            l4 = self._points_to_line(l4_start.intersection(l3),
+                l4_end.intersection(l5))
         else:
-            return i
+            # noise is too high, don't use the curve optimization
+            l4 = self.line(pullback_cruise_idx, break_contact_idx)
+            # log for user debugging
+            logging.info('TapAnalysis: curve optimization not used')
+
+        return [l1, l2, l3, l4, l5], homing_start_idx, pullback_end_idx
 
 
-# split a group of points into 2 lines using 1 elbow point
-def split_to_lines(x, y, elbow_index, discard=None):
-    discard = [0, 0, 0, 0] if discard is None else discard
-    l1 = lstsq_line(x[0 + discard[0]:elbow_index - discard[1]],
-                    y[0 + discard[0]:elbow_index - discard[1]])
-    l2 = lstsq_line(x[elbow_index + discard[2]:-1 - discard[3]],
-                    y[elbow_index + discard[2]:-1 - discard[3]])
-    return l1, l2
+class TapValidationError(Exception):
+    def __init__(self, error_code, message):
+        super(TapValidationError, self).__init__(message)
+        self.error_code = error_code
+        pass
+
+    def to_dict(self):
+        return  {
+            'error_code': self.error_code,
+            'message': str(self)
+        }
 
 
-# split a line into 3 parts by elbows. Return lines and intersection points
-def elbow_split(x, y, discard=None):
-    discard = [0, 0, 0, 0] if discard is None else discard
-    elbow_index = find_kneedle(x, y)
-    l1, l2 = split_to_lines(x, y, elbow_index, discard)
-    elbow_point = l1.intersection(l2)
-    # return (line, point, line, point, line)
-    return l1, elbow_point, l2
-
-
-# break a tap event down into 6 points and 5 lines:
-#    *-----*|       /*-----*
-#           |      /
-#           *----*/
-def tap_decompose(time, force, homing_end_idx, pullback_start_idx, discard=0):
-    default_discard = [discard, discard, discard, discard]
-    compression_discard = [discard, discard, 0, 0]
-    # compression elbow
-    start_time = time[0:homing_end_idx]
-    start_force = force[0:homing_end_idx]
-    # discard=0 because there are so few points in the compression line
-    # this technique works better there than kneedle when the probe is long
-    contact_elbow_idx = find_two_lines_best_fit(start_time, start_force, -1)
-    l1, l2 = split_to_lines(start_time, start_force, contact_elbow_idx,
-                            compression_discard)
-    p1 = l1.intersection(l2)
-    # pullback elbow
-    pullback_time = time[pullback_start_idx:-1]
-    pullback_force = force[pullback_start_idx:-1]
-    l4, p4, l5 = elbow_split(pullback_time, pullback_force, default_discard)
-    # dwell line:
-    # discard the first 1/5th of the line because it contains ringing
-    dwell_start = homing_end_idx + ((pullback_start_idx - homing_end_idx) // 5)
-    dwell_time = time[dwell_start:pullback_start_idx]
-    dwell_force = force[dwell_start:pullback_start_idx]
-    l3 = lstsq_line(dwell_time, dwell_force)
-    # dwell line intersections:
-    p2 = l3.intersection(l2)
-    p3 = l3.intersection(l4)
-    p0 = ForcePoint(time[0], l1.find_force(time[0]))
-    p5 = ForcePoint(time[-1], l5.find_force(time[-1]))
-    return [p0, p1, p2, p3, p4, p5], [l1, l2, l3, l4, l5]
-
-
-# calculate variance between a ForceLine and a region of force data
-def segment_variance(force, time, start, end, line):
-    import numpy as np
-    mean = np.average(force[start:end])
-    total_var = 0
-    delta_var = 0
-    for i in range(start, end):
-        load = force[i]
-        instant = time[i]
-        total_var += pow(load - mean, 2)
-        delta_var += pow(line.find_force(instant) - load, 2)
-    return total_var, delta_var
-
-
-# decide how well the ForceLines predict force near an elbow
-# bad predictions == blunt elbow, good predictions == sharp elbow
-def elbow_r_squared(force, time, elbow_idx, widths, left_line, right_line):
-    r_squared = []
-    for width in widths:
-        l_tv, l_dv = segment_variance(force, time, elbow_idx - width,
-                                      elbow_idx, left_line)
-        r_tv, r_dv = segment_variance(force, time, elbow_idx,
-                                      elbow_idx + width, right_line)
-        r2 = 1 - ((l_dv + r_dv) / (l_tv + r_tv))
-        # returns r squared as a percentage. -350% is bad. 80% is good!
-        r_squared.append(round((r2 * 100.), 1))
-    return r_squared
-
-
-# TODO: maybe discard points can scale with sample rate from 1 to 3
-DEFAULT_DISCARD_POINTS = 3
+# Move index constants. The PROBE_START move may be deleted from the trapq if
+# the probe takes longer than 30s. Indexing from the end of the list
+# is always consistent:
+PROBE_START = -6
+PROBE_CRUISE = -5
+PROBE_HALT = -4
+PULLBACK_START = -3
+PULLBACK_CRUISE = -2
+PULLBACK_END = -1
 
 
 class TapAnalysis(object):
+    def __init__(self, samples, trigger_force):
+        self._is_valid = False
+        self._tap_pos = None
+        self._tap_points = []
+        self._tap_lines = []
+        self._tap_angles = []
+        self._elapsed = 0.
+        self._error = None
+        self._home_end_time = None
+        self._pullback_start_time = None
+        self._pullback_end_time = None
+        self._pullback_cruise_time = None
+        self._pullback_duration = None
+        self._homing_start_index = 0
+        self._pullback_end_index = -1
+        nd_samples = np.asarray(samples, dtype=np.float64)
+        self._time = nd_samples[:, 0]
+        self._force = nd_samples[:, 1]
+        self._force_graph = ForceGraph(self._time, self._force)
+        self._trigger_force = trigger_force
+        self._moves = []
 
-    def __init__(self,
-                 printer,
-                 samples,
-                 tap_filter,
-                 discard=DEFAULT_DISCARD_POINTS):
-        import numpy as np
-        self.printer = printer
-        self.discard = discard
-        np_samples = np.array(samples)
-        self.time = np_samples[:, 0]
-        self.force = np_samples[:, 1]
-        self.force = tap_filter.filtfilt(self.force)
-        self.sample_time = np.average(np.diff(self.time))
-        self.r_squared_widths = [
-            int((n * 0.01) // self.sample_time) for n in range(2, 7)
-        ]
-        trapq = printer.lookup_object('motion_report').trapqs['toolhead']
-        self.moves = self._extract_trapq(trapq)
-        self.home_end_time = self._recalculate_homing_end()
-        self.pullback_start_time = self.moves[-3].print_time
-        self.pullback_end_time = (self.moves[-1].print_time +
-                                  self.moves[-1].move_t)
-        self.position = self._extract_pos_history()
-        self.is_valid = False
-        self.tap_pos = None
-        self.tap_points = []
-        self.tap_lines = []
-        self.tap_angles = []
-        self.tap_r_squared = None
+    def _move_dist(self, move, print_time):
+        move_t = move.move_t
+        move_time = max(0., min(move_t, print_time - move.print_time))
+        dist = ((move.start_v + (.5 * move.accel) * move_time) * move_time)
+        return dist
 
-    # build toolhead position history for the time/force graph
-    def _extract_pos_history(self):
-        z_pos = []
-        for time in self.time:
-            z_pos.append(self.get_toolhead_position(time))
-        return z_pos
+    def _move_pos(self, move, dist):
+        return (move.start_x + (move.x_r * dist),
+        move.start_y + (move.y_r * dist),
+        move.start_z + (move.z_r * dist))
 
+    # get an XYZ position from the toolhead position history
+    # positions before/after the captured history are assumed to be stationary
     def get_toolhead_position(self, print_time):
-        for i, move in enumerate(self.moves):
+        for i, move in enumerate(self._moves):
             start_time = move.print_time
-            # time before first move, printer was stationary
+            # time before first move, assume printer was stationary
             if i == 0 and print_time < start_time:
-                return move.start_x, move.start_y, move.start_z
+                return self._move_pos(move, 0)
             end_time = float('inf')
-            if i < (len(self.moves) - 1):
-                end_time = self.moves[i + 1].print_time
+            if i < (len(self._moves) - 1):
+                end_time = self._moves[i + 1].print_time
             if start_time <= print_time < end_time:
                 # we have found the move
-                move_t = move.move_t
-                move_time = max(0., min(move_t, print_time - move.print_time))
-                dist = ((move.start_v + .5 * move.accel * move_time) *
-                        move_time)
-                pos = ((move.start_x + move.x_r * dist,
-                        move.start_y + move.y_r * dist,
-                        move.start_z + move.z_r * dist))
+                dist = self._move_dist(move, print_time)
+                pos = self._move_pos(move, dist)
                 return pos
             else:
                 continue
-        raise self.printer.command_error("Move not found, that is impossible!")
+        # time is after last move, assume printer was stationary
+        move = self._moves[-1]
+        dist = self._move_dist(move, print_time)
+        return self._move_pos(move, dist)
 
-    # adjust move_t of move 1 to match the toolhead position of move 2
+    # adjust move_t of PROBE_CRUISE to match the toolhead position of PROBE_HALT
     def _recalculate_homing_end(self):
-        #TODO: REVIEW: This takes some logical shortcuts, does it need to be
-        # more generalized? e.g. to all 3 axes?
-        homing_move = self.moves[-5]
-        halt_move = self.moves[-4]
+        homing_move = self._moves[PROBE_CRUISE]
+        halt_move = self._moves[PROBE_HALT]
         # acceleration should be 0! This is the 'coasting' move:
-        accel = homing_move.accel
-        if accel != 0.:
-            raise self.printer.command_error(
-                'Unexpected acceleration in coasting move')
+        if homing_move.accel != 0.:
+            raise TapValidationError('COASTING_MOVE_ACCELERATION',
+                'Probing move is accelerating/decelerating which is invalid')
         # how long did it take to get to end_z?
         homing_move.move_t = abs(
             (halt_move.start_z - homing_move.start_z) / homing_move.start_v)
         return homing_move.print_time + homing_move.move_t
 
-    def _extract_trapq(self, trapq):
-        moves, _ = trapq.extract_trapq(self.time[0], self.time[-1])
-        moves_out = []
+    # extract and save TrapQueue moves
+    def _extract_trapq(self, printer):
+        trapq = printer.lookup_object('motion_report').trapqs['toolhead']
+        moves, _ = trapq.extract_trapq(float(self._time[0]),
+            float(self._time[-1]))
         for move in moves:
-            moves_out.append(TrapezoidalMove(move))
+            self._moves.append(TrapezoidalMove(move))
             # DEBUG: enable to see trapq contents
             # logging.info("trapq move: %s" % (moves_out[-1].to_dict(),))
-        num_moves = len(moves_out)
-        if num_moves < 5 or num_moves > 6:
-            raise self.printer.command_error(
-                "Expected tap to be 5 to 6 moves long was %s" % (num_moves, ))
-        return moves_out
 
-    def analyze(self):
-        discard = self.discard
-        force = self.force
-        time = self.time
-        # find peak local maximum force after homing ends:
-        home_end_index = index_near(time, self.home_end_time)
-        pullback_start_index = index_near(time, self.pullback_start_time)
-        # look forward for the next index where force decreases:
-        #TODO: REVIEW: On my printer it is always true that the calculated
-        # home_end_time is before peak force. Could this not be true for other
-        # printers?
-        max_force = abs(force[home_end_index])
-        peak_force_index = home_end_index
-        for i in range(home_end_index + 1, pullback_start_index):
-            next_force = abs(force[i])
-            if next_force > max_force:
-                max_force = next_force
-                peak_force_index += 1
-            else:
-                break
-        if not self.validate_peak_force(peak_force_index, home_end_index):
-            logging.info('Peak force not close to endstop trigger time')
-            # return
-        pullback_start_index = index_near(time, self.pullback_start_time)
-        points, lines = tap_decompose(time, force, peak_force_index,
-                                      pullback_start_index, discard)
-        self.tap_points = points
-        self.tap_lines = lines
-        if not self.validate_order():
-            logging.info('Tap failed chronology check')
-            return
-        self.tap_angles = self.calculate_angles()
-        if not self.validate_elbow_rotation():
-            logging.info('Tap failed elbow rotation check')
-            return
-        break_contact_time = points[4].time
-        if not self.validate_break_contact_time(break_contact_time):
-            logging.info('Tap break-contact time is invalid')
-            return
-        self.tap_pos = self.get_toolhead_position(break_contact_time)
-        if not self.validate_elbow_clearance():
-            logging.info('Elbow too near tap ends')
-            return
-        self.tap_r_squared = self.calculate_r_squared()
-        self.is_valid = True
-
-    # validate peak force within 50ms of homing end
-    def validate_peak_force(self, peak_force_index, home_end_index):
-        delta = peak_force_index - home_end_index
-        delta_t = abs(self.sample_time * delta)
-        return delta <= 1 or delta_t < 0.05
+    # perform analysis, throws exceptions
+    def analyze(self, printer):
+        self._extract_trapq(printer)
+        num_moves = len(self._moves)
+        if num_moves < 5:
+            raise TapValidationError('TOO_FEW_PROBING_MOVES',
+                '5 Probing moves expected but there were fewer')
+        elif num_moves > 6:
+            raise TapValidationError('TOO_MANY_PROBING_MOVES',
+                'More than 6 probing moves were found during the tap')
+        self._home_end_time = self._recalculate_homing_end()
+        self._pullback_start_time = self._moves[PULLBACK_START].print_time
+        self._pullback_end_time = (
+                self._moves[PULLBACK_END].print_time + self._moves[
+            PULLBACK_END].move_t)
+        self._pullback_cruise_time = self._moves[PULLBACK_CRUISE].print_time
+        self._pullback_duration = (
+                self._pullback_end_time - self._pullback_start_time)
+        lines, i, j = self._force_graph.tap_decompose(self._home_end_time,
+            self._pullback_start_time, self._pullback_cruise_time,
+            self._pullback_duration)
+        self._homing_start_index = i
+        self._pullback_end_index = j
+        self.set_tap_lines(lines)
+        self._validate_order()
+        self._validate_tap_shape()
+        self._validate_break_contact_time()
+        self._is_valid = True
 
     # validate that a set of ForcePoint objects are in chronological order
-    def validate_order(self):
-        p = self.tap_points
-        return (p[0].time < p[1].time < p[2].time < p[3].time < p[4].time <
-                p[5].time)
+    def _validate_order(self):
+        p = self._tap_points
+        if not (p[0].time < p[1].time < p[2].time < p[3].time < p[4].time
+                < p[5].time):
+            raise TapValidationError('TAP_CHRONOLOGY',
+                'Tap points are out of chronological order')
 
     # Validate that the rotations between lines form a tap shape
-    def validate_elbow_rotation(self):
-        a1, a2, a3, a4 = self.tap_angles
+    def _validate_tap_shape(self):
+        a1, a2, a3, a4 = self._tap_angles
         # with two polarities there are 2 valid tap shapes:
-        return ((a1 > 0 and a2 < 0 and a3 < 0 and a4 > 0)
-                or (a1 < 0 and a2 > 0 and a3 > 0 and a4 < 0))
+        if not ((a1 > 0 and a2 < 0 and a3 < 0 and a4 > 0) or (
+                a1 < 0 and a2 > 0 and a3 > 0 and a4 < 0)):
+            raise TapValidationError('TAP_SHAPE_INVALID',
+                'Force data does not form a tap shape')
 
-    # check for space around elbows to calculate r_squared
-    def validate_elbow_clearance(self):
-        width = self.r_squared_widths[-1]
-        start_idx = index_near(self.time, self.tap_points[1].time) + width
-        end_idx = index_near(self.time, self.tap_points[4].time) - width
-        return start_idx > 0 and end_idx < len(self.time)
+    # The proposed break contact point must fall inside the
+    # first 3/4s of the pullback move
+    def _validate_break_contact_time(self):
+        break_contact_time = self._tap_points[4].time
+        start_t = self._pullback_start_time
+        end_t = self._pullback_end_time
+        safety_margin = (end_t - start_t) / 4.
+        if break_contact_time < start_t:
+            raise TapValidationError('TAP_BREAK_CONTACT_TOO_EARLY',
+                'Tap break-contact time is too early')
+        elif break_contact_time > end_t:
+            raise TapValidationError('TAP_BREAK_CONTACT_TOO_LATE',
+                'Tap break-contact time is too late')
+        elif break_contact_time > (end_t - safety_margin):
+            raise TapValidationError('TAP_PULLBACK_TOO_SHORT',
+                'Tap break-contact time is too late, pullback move may be too '
+                'short')
 
-    # the proposed break contact point must fall inside the pullback move
-    def validate_break_contact_time(self, break_contact_time):
-        return (self.pullback_start_time < break_contact_time <
-                self.pullback_end_time)
+    def _calculate_points(self):
+        l1, l2, l3, l4, l5 = self._tap_lines
+        # Line intersections:
+        p0 = ForcePoint(self._time[self._homing_start_index],
+            l1.find_force(self._time[self._homing_start_index]))
+        p1 = l1.intersection(l2)
+        p2 = l2.intersection(l3)
+        p3 = l3.intersection(l4)
+        p4 = l4.intersection(l5)
+        p5 = ForcePoint(self._time[self._pullback_end_index],
+            l5.find_force(self._time[self._pullback_end_index]))
+        self._tap_points = [p0, p1, p2, p3, p4, p5]
 
-    def calculate_angles(self):
-        l1, l2, l3, l4, l5 = self.tap_lines
-        return [l1.angle(l2), l2.angle(l3), l3.angle(l4), l4.angle(l5)]
+    def _calculate_angles(self):
+        l1, l2, l3, l4, l5 = self._tap_lines
+        self._tap_angles = [l1.angle(l2), l2.angle(l3), l3.angle(l4),
+            l4.angle(l5)]
 
-    def calculate_r_squared(self):
-        r_squared = []
-        for i, elbow in enumerate(self.tap_points[1:-1]):
-            elbow_idx = index_near(self.time, elbow.time)
-            r_squared.append(
-                elbow_r_squared(self.force, self.time, elbow_idx,
-                                self.r_squared_widths, self.tap_lines[i],
-                                self.tap_lines[i + 1]))
-        return r_squared
+    # 'read only' fields:
+    def get_time(self):
+        return self._time
+
+    def get_force(self):
+        return self._force
+
+    def get_trigger_force(self):
+        return self._trigger_force
+
+    def get_moves(self):
+        return self._moves
+
+    def get_home_end_time(self):
+        return self._home_end_time
+
+    def get_pullback_start_time(self):
+        return self._pullback_start_time
+
+    def get_pullback_end_time(self):
+        return self._pullback_end_time
+
+    def get_tap_points(self):
+        return self._tap_points
+
+    def get_tap_pos(self):
+        return self._tap_pos
+
+    def get_tap_angles(self):
+        return self._tap_angles
+
+    # read/write fields:
+    def get_tap_lines(self):
+        return self._tap_lines
+
+    # Allow TapClassifier modules to overwrite the lines
+    # This also causes the tap points, angles and tap pos to be recalculated
+    def set_tap_lines(self, tap_lines):
+        self._tap_lines = tap_lines
+        self._calculate_points()
+        self._calculate_angles()
+        break_contact_time = self._tap_points[4].time
+        self._tap_pos = self.get_toolhead_position(break_contact_time)
+
+    def is_valid(self):
+        return self._is_valid
+
+    def set_is_valid(self, is_valid):
+        self._is_valid = is_valid
+
+    def get_validation_error(self):
+        return self._error
+
+    def set_validation_error(self, error):
+        self._error = error
+
+    def get_elapsed(self):
+        return self._elapsed
+
+    def set_elapsed(self, elapsed):
+        self._elapsed = elapsed
 
     # convert to dictionary for JSON encoder
     def to_dict(self):
@@ -1023,16 +1042,138 @@ class TapAnalysis(object):
         }
 
 
-# support for validating individual options in a list
-def getfloatlist(config, option, above=None, below=None, max_len=None):
-    values = config.getfloatlist(option, default=[])
-    if max_len is not None and len(values) > max_len:
-        config.error(
-            "Option '%s' in section '%s' must have maximum length %s" %
-            (option, config.get_name(), max_len))
-    for value in values:
-        validatefloat(config, option, value, above, below)
-    return values
+# Orchestrate TapAnalysis and TapClassifier. Handle timing, error capture,
+# event broadcast, clients & logging
+class TapAnalysisHelper:
+    def __init__(self, printer, name, tap_classifier):
+        self._printer = printer
+        self._tap_classifier = tap_classifier
+        # webhooks support
+        self._clients = load_cell.ApiClientHelper(printer)
+        header = {"header": ["probe_tap_event"]}
+        self._clients.add_mux_endpoint("load_cell_probe/dump_taps",
+            "load_cell_probe", name, header)
+
+    def analyze(self, samples, trigger_force):
+        t_start = time.time()
+        tap_analysis = TapAnalysis(samples, trigger_force)
+        try:
+            tap_analysis.analyze(self._printer)
+        except TapValidationError as ve:
+            tap_analysis.set_is_valid(False)
+            tap_analysis.set_validation_error(ve)
+        # tap classifier always gets to process the data
+        try:
+            self._tap_classifier.classify(tap_analysis)
+        except TapValidationError as ve:
+            tap_analysis.set_is_valid(False)
+            tap_analysis.set_validation_error(ve)
+        # total elapsed time for all calculations
+        tap_analysis.set_elapsed(time.time() - t_start)
+        # broadcast tap event data:
+        self._clients.send({'tap': tap_analysis.to_dict()})
+        self._log_errors(tap_analysis)
+        return tap_analysis
+
+    # log errors to event log
+    def _log_errors(self, tap_analysis):
+        # if the tap is valid, don't log any errors
+        if tap_analysis.is_valid():
+            return
+        # log errors
+        ve = tap_analysis.get_validation_error()
+        logging.info("Bad tap detected: %s - %s" % (ve.error_code, ve))
+
+
+# Access a parameter from config or GCode command via a consistent interface
+# stores name and constraints to keep things DRY
+class ParamHelper:
+    def __init__(self, config, name, type_name, default=None, minval=None,
+            maxval=None, above=None, below=None, max_len=None):
+        self._config_section = config.get_name()
+        self._config_error = config.error
+        self.name = name
+        self._type_name = type_name
+        self.value = default
+        self.minval = minval
+        self.maxval = maxval
+        self.above = above
+        self.below = below
+        self.max_len = max_len
+        # read from config once
+        self.value = self.get(config=config)
+
+    def _get_name(self, gcmd):
+        return self.name.upper() if gcmd else self.name
+
+    def _validate_float(self, description, error, value, above, below):
+        above = above or self.above
+        if above is not None and value <= above:
+            raise error("%s must be above %s" % (description, above))
+        below = below or self.below
+        if below is not None and value >= below:
+            raise error("%s must be below %s" % (description, below))
+
+    # support for validating individual options in a list of floats
+    def _validate_float_list(self, gcmd, values, above, below):
+        if gcmd:
+            description = ("Error on '%s': %s" % (
+                gcmd.get_commandline(), self._get_name(gcmd)))
+            error = gcmd.error
+        else:
+            description = ("Option '%s' in section '%s'" % (
+                self._get_name(gcmd), self._config_section))
+            error = self._config_error
+        if self.max_len is not None and len(values) > self.max_len:
+            raise error(
+                "%s has maximum length %s" % (description, self.max_len))
+        for value in values:
+            self._validate_float(description, error, value, above, below)
+
+    def _get_int(self, config, gcmd, minval, maxval):
+        get = gcmd.get_int if gcmd else config.getint
+        return get(self._get_name(gcmd), self.value, minval or self.minval,
+            maxval or self.maxval)
+
+    def _get_float(self, config, gcmd, minval, maxval, above, below):
+        get = gcmd.get_float if gcmd else config.getfloat
+        return get(self._get_name(gcmd), self.value, minval or self.minval,
+            maxval or self.maxval, above or self.above, below or self.below)
+
+    def _get_float_list(self, config, gcmd, above, below):
+        # this code defaults to the empty list, never return None
+        default = (self.value or [])
+        if gcmd:
+            # if the parameter isn't part of the command, return the default
+            if not self._get_name(gcmd) in gcmd.get_command_parameters():
+                return default
+            # parameter exists, always prefer whatever is in the command
+            value = gcmd.get(self._get_name(gcmd), default='')
+            # Return an empty list for empty value
+            if len(value.strip()) == 0:
+                return []
+            try:
+                float_list = [float(p.strip()) for p in value.split(',')]
+            except:
+                raise gcmd.error("Error on '%s': unable to parse %s" % (
+                    gcmd.get_commandline(), value))
+        else:
+            float_list = config.getfloatlist(self._get_name(gcmd),
+                default=default)
+        if float_list:
+            self._validate_float_list(gcmd, float_list, above, below)
+        return float_list
+
+    def get(self, gcmd=None, minval=None, maxval=None, above=None, below=None,
+            config=None):
+        if config is None and gcmd is None:
+            return self.value
+        if self._type_name == 'int':
+            return self._get_int(config, gcmd, minval, maxval)
+        elif self._type_name == 'float':
+            return self._get_float(config, gcmd, minval, maxval, above, below)
+        else:
+            return self._get_float_list(config, gcmd, above, below)
 
 
 def validatefloat(config, option, value, above, below):
