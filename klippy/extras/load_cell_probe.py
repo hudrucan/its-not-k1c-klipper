@@ -1089,17 +1089,19 @@ class TapAnalysisHelper:
 # stores name and constraints to keep things DRY
 class ParamHelper:
     def __init__(self, config, name, type_name, default=None, minval=None,
-            maxval=None, above=None, below=None, max_len=None):
+            maxval=None, above=None, below=None, max_len=None, choices=None):
         self._config_section = config.get_name()
         self._config_error = config.error
         self.name = name
         self._type_name = type_name
         self.value = default
+        self.default_choice = default
         self.minval = minval
         self.maxval = maxval
         self.above = above
         self.below = below
         self.max_len = max_len
+        self.choices = choices
         # read from config once
         self.value = self.get(config=config)
 
@@ -1140,6 +1142,22 @@ class ParamHelper:
         return get(self._get_name(gcmd), self.value, minval or self.minval,
             maxval or self.maxval, above or self.above, below or self.below)
 
+    def _get_choice(self, config, gcmd):
+        name = self._get_name(gcmd)
+        if gcmd:
+            c = gcmd.get(name, default=self.default_choice)
+            if not c in self.choices:
+                raise gcmd.error("Choice '%s' for option '%s' is not a valid "
+                                 "choice" % (c, name))
+            return self.choices[c]
+        else:
+            value = config.getchoice(name, self.choices,
+                default=self.default_choice)
+            # config returns the value, reverse it to get the key:
+            self.default_choice = list(self.choices.keys())[
+                list(self.choices.values()).index(value)]
+            return value
+
     def _get_float_list(self, config, gcmd, above, below):
         # this code defaults to the empty list, never return None
         default = (self.value or [])
@@ -1172,6 +1190,8 @@ class ParamHelper:
             return self._get_int(config, gcmd, minval, maxval)
         elif self._type_name == 'float':
             return self._get_float(config, gcmd, minval, maxval, above, below)
+        elif self._type_name == 'choice':
+            return self._get_choice(config, gcmd)
         else:
             return self._get_float_list(config, gcmd, above, below)
 
