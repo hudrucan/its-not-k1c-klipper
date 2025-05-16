@@ -1185,24 +1185,24 @@ class ProbeActivationHelper:
                 "Toolhead moved during probe deactivate_gcode script")
 
 
-# ProbeSession that implements Tap and retry logic
+# ProbeSession that implements Tap logic
 class TapSession:
     def __init__(self, config, tapping_move, probe_params_helper,
             nozzle_cleaner, config_helper):
         self._printer = config.get_printer()
         self._tapping_move = tapping_move
         self._probe_params_helper = probe_params_helper
-        self._nozzle_cleaner_module = nozzle_cleaner
-        self._config_helper = config_helper
         self._activator = ProbeActivationHelper(config)
         # Session state
         self._results = []
         self._locations = {}
 
     def start_probe_session(self, gcmd):
+        self._activator.activate_probe()
         return self
 
     def end_probe_session(self):
+        self._activator.deactivate_probe()
         self._results = []
         self._locations = {}
 
