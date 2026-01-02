@@ -1549,7 +1549,6 @@ class LoadCellPrinterProbe:
         # printer integration
         LoadCellProbeCommands(config, load_cell_probing_move, tap_session)
         probe.ProbeVirtualEndstopDeprecation(config)
-        self._printer.add_object('probe', self)
         if len(config.get_name().split())>1:
             chipname = '_'.join(config.get_name().split()[1:])
         else:
