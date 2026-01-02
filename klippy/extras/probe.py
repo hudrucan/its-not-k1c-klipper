@@ -205,6 +205,7 @@ class LookupZSteppers:
 class HomingViaProbeHelper:
     def __init__(self, config, mcu_probe, param_helper):
         self.printer = config.get_printer()
+        self.name = config.get_name()
         self.mcu_probe = mcu_probe
         self.param_helper = param_helper
         self.multi_probe_pending = False
@@ -501,11 +502,6 @@ class ProbePointsHelper:
     def start_probe(self, gcmd):
         manual_probe.verify_no_manual_probe(self.printer)
         # Lookup objects
-        if len(self.name.split())>1:
-            self.prefix = "_".join(self.name.split()[1:])
-        else:
-            self.prefix = ""
-        self.chipname = self.prefix or 'probe'
         probe = self.printer.lookup_object(self.chipname, None)
         method = gcmd.get('METHOD', 'automatic').lower()
         def_move_z = self.default_horizontal_move_z
