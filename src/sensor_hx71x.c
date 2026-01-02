@@ -12,7 +12,7 @@
 #include "command.h" // DECL_COMMAND
 #include "sched.h" // sched_add_timer
 #include "sensor_bulk.h" // sensor_bulk_report
-#include "load_cell_probe.h" // load_cell_probe_report_sample
+#include "load_cell_endstop.h" // load_cell_endstop_report_sample
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -25,7 +25,7 @@ struct hx71x_adc {
     struct gpio_in dout; // pin used to receive data from the hx71x
     struct gpio_out sclk; // pin used to generate clock for the hx71x
     struct sensor_bulk sb;
-    struct load_cell_probe *lce;
+    struct load_cell_endstop *lce;
 };
 
 enum {
@@ -148,6 +148,7 @@ static void
 hx71x_read_adc(struct hx71x_adc *hx71x, uint8_t oid)
 {
     // Read from sensor
+    uint32_t start = timer_read_time();
     uint_fast8_t gain_channel = hx71x->gain_channel;
     uint32_t adc = hx71x_raw_read(hx71x->dout, hx71x->sclk, 24 + gain_channel);
 
@@ -177,13 +178,13 @@ hx71x_read_adc(struct hx71x_adc *hx71x, uint8_t oid)
         counts = hx71x->last_error;
     }
 
-    // probe is optional, report if enabled
-    if (hx71x->last_error == 0 && hx71x->lce) {
-        load_cell_probe_report_sample(hx71x->lce, counts);
-    }
-
     // Add measurement to buffer
     add_sample(hx71x, oid, counts, false);
+
+    // endstop is optional, report if enabled
+    if (hx71x->last_error == 0 && hx71x->lce) {
+        load_cell_endstop_report_sample(hx71x->lce, counts, start);
+    }
 }
 
 // Create a hx71x sensor
@@ -206,13 +207,13 @@ DECL_COMMAND(command_config_hx71x, "config_hx71x oid=%c gain_channel=%c"
              " dout_pin=%u sclk_pin=%u");
 
 void
-hx71x_attach_load_cell_probe(uint32_t *args) {
+command_attach_endstop_hx71x(uint32_t *args) {
     uint8_t oid = args[0];
     struct hx71x_adc *hx71x = oid_lookup(oid, command_config_hx71x);
-    hx71x->lce = load_cell_probe_oid_lookup(args[1]);
+    hx71x->lce = load_cell_endstop_oid_lookup(args[1]);
 }
-DECL_COMMAND(hx71x_attach_load_cell_probe, "hx71x_attach_load_cell_probe oid=%c"
-    " load_cell_probe_oid=%c");
+DECL_COMMAND(command_attach_endstop_hx71x, "attach_endstop_hx71x oid=%c"
+    " load_cell_endstop_oid=%c");
 
 // start/stop capturing ADC data
 void
