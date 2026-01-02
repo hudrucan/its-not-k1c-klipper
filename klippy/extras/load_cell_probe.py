@@ -1580,6 +1580,16 @@ class LoadCellPrinterProbe:
         status.update(self._tapping_move.get_status(eventtime))
         return status
 
-
 def load_config(config):
-    return LoadCellPrinterProbe(config)
+    lc_probe = LoadCellPrinterProbe(config, lc, lce)
+    #TODO: for multiple probes this cant be static value 'probe'
+    if len(config.get_name().split()) > 1:
+        chipname = '_'.join(config.get_name().split()[1:])
+    else:
+        chipname = 'probe'
+    printer.add_object(chipname, lc_probe)
+    return lc_probe
+
+
+def load_config_prefix(config):
+    return load_config(config)
