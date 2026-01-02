@@ -49,7 +49,7 @@ class ProbeCommandHelper:
         else:
             self.prefix = ""
         self.chipname = self.prefix or 'probe'
-        gcode.register_command('QUERY_PROBE', self.cmd_QUERY_PROBE,
+        gcode.register_command(self.prefix.upper()+'_QUERY_PROBE', self.cmd_QUERY_PROBE,
                                desc=self.cmd_QUERY_PROBE_help)
         # PROBE command
         self.last_z_result = 0.
