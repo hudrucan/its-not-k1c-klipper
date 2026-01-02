@@ -1581,6 +1581,7 @@ class LoadCellPrinterProbe:
         return status
 
 def load_config(config):
+    printer = config.get_printer()
     lc_probe = LoadCellPrinterProbe(config)
     #TODO: for multiple probes this cant be static value 'probe'
     if len(config.get_name().split()) > 1:
