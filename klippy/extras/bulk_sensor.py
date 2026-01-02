@@ -292,6 +292,8 @@ class FixedFreqReader:
                 udata = unpack_from(data, i * bytes_per_sample)
                 samples[count] = (ptime,) + udata
                 count += 1
+                if count >= len(samples):
+                    break
         self.clock_sync.set_last_chip_clock(seq * samples_per_block + i)
         del samples[count:]
         return samples
