@@ -27,13 +27,11 @@
 
 import math
 
-
 class AutoZOffsetCalibration:
 
     def __init__(self, config):
         self.printer = config.get_printer()
-        x_pos_center, y_pos_center = config.getfloatlist("center_xy_position",
-                                                         count=2)
+        x_pos_center, y_pos_center = config.getfloatlist("center_xy_position", count=2)
         self.center_x_pos, self.center_y_pos = x_pos_center, y_pos_center
         self.z_hop = config.getfloat("z_hop", default=10.0)
         self.z_hop_speed = config.getfloat('z_hop_speed', 15., above=0.)

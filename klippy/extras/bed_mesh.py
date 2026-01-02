@@ -133,7 +133,7 @@ class BedMesh:
         self.update_status()
     def handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
-        self.bmc.print_generated_points(logging.info, truncate=True)
+        self.bmc.print_generated_points(logging.info)
     def set_mesh(self, mesh):
         if mesh is not None and self.fade_end != self.FADE_DISABLE:
             self.log_fade_complete = True
@@ -186,8 +186,7 @@ class BedMesh:
             self.last_position[2] -= self.fade_target
         else:
             # return current position minus the current z-adjustment
-            cur_pos = self.toolhead.get_position()
-            x, y, z = cur_pos[:3]
+            x, y, z, e = self.toolhead.get_position()
             max_adj = self.z_mesh.calc_z(x, y)
             factor = 1.
             z_adj = max_adj - self.fade_target
@@ -203,19 +202,19 @@ class BedMesh:
                           (self.fade_dist - z_adj))
                 factor = constrain(factor, 0., 1.)
             final_z_adj = factor * z_adj + self.fade_target
-            self.last_position[:] = [x, y, z - final_z_adj] + cur_pos[3:]
+            self.last_position[:] = [x, y, z - final_z_adj, e]
         return list(self.last_position)
     def move(self, newpos, speed):
         factor = self.get_z_factor(newpos[2])
         if self.z_mesh is None or not factor:
             # No mesh calibrated, or mesh leveling phased out.
-            x, y, z = newpos[:3]
+            x, y, z, e = newpos
             if self.log_fade_complete:
                 self.log_fade_complete = False
                 logging.info(
                     "bed_mesh fade complete: Current Z: %.4f fade_target: %.4f "
                     % (z, self.fade_target))
-            self.toolhead.move([x, y, z + self.fade_target] + newpos[3:], speed)
+            self.toolhead.move([x, y, z + self.fade_target, e], speed)
         else:
             self.splitter.build_move(self.last_position, newpos, factor)
             while not self.splitter.traverse_complete:
@@ -347,7 +346,7 @@ class BedMeshCalibrate:
         self.gcode.register_command(
             'BED_MESH_CALIBRATE', self.cmd_BED_MESH_CALIBRATE,
             desc=self.cmd_BED_MESH_CALIBRATE_help)
-    def print_generated_points(self, print_func, truncate=False):
+    def print_generated_points(self, print_func):
         x_offset = y_offset = 0.
         probe = self.printer.lookup_object('probe', None)
         if probe is not None:
@@ -356,10 +355,6 @@ class BedMeshCalibrate:
                    " |  Tool Adjusted  |   Probe")
         points = self.probe_mgr.get_base_points()
         for i, (x, y) in enumerate(points):
-            if i >= 50 and truncate:
-                end = len(points) - 1
-                print_func("...points %d through %d truncated" % (i, end))
-                break
             adj_pt = "(%.1f, %.1f)" % (x - x_offset, y - y_offset)
             mesh_pt = "(%.1f, %.1f)" % (x, y)
             print_func(
@@ -618,6 +613,8 @@ class BedMeshCalibrate:
                 self.mesh_config, self.mesh_min, self.mesh_max,
                 self.radius, self.origin, probe_method
             )
+            gcmd.respond_info("Generating new points...")
+            self.print_generated_points(gcmd.respond_info)
             msg = "\n".join(["%s: %s" % (k, v)
                              for k, v in self.mesh_config.items()])
             logging.info("Updated Mesh Configuration:\n" + msg)
@@ -869,7 +866,7 @@ class ProbeManager:
         pprobe = self.printer.lookup_object("probe", None)
         if pprobe is not None:
             probe_name = pprobe.get_status(None).get("name", "")
-            can_scan = "eddy" in probe_name #eddy-ng
+            can_scan = probe_name.startswith("probe_eddy_current")
         if method == "rapid_scan" and can_scan:
             self.rapid_scan_helper.perform_rapid_scan(gcmd)
         else:
@@ -1274,7 +1271,7 @@ class MoveSplitter:
         self.z_offset = self._calc_z_offset(prev_pos)
         self.traverse_complete = False
         self.distance_checked = 0.
-        axes_d = [np - pp for np, pp in zip(self.next_pos, self.prev_pos)]
+        axes_d = [self.next_pos[i] - self.prev_pos[i] for i in range(4)]
         self.total_move_length = math.sqrt(sum([d*d for d in axes_d[:3]]))
         self.axis_move = [not isclose(d, 0., abs_tol=1e-10) for d in axes_d]
     def _calc_z_offset(self, pos):
@@ -1287,7 +1284,7 @@ class MoveSplitter:
             raise self.gcode.error(
                 "bed_mesh: Slice distance is negative "
                 "or greater than entire move length")
-        for i in range(len(self.next_pos)):
+        for i in range(4):
             if self.axis_move[i]:
                 self.current_pos[i] = lerp(
                     t, self.prev_pos[i], self.next_pos[i])
@@ -1302,9 +1299,9 @@ class MoveSplitter:
                     next_z = self._calc_z_offset(self.current_pos)
                     if abs(next_z - self.z_offset) >= self.split_delta_z:
                         self.z_offset = next_z
-                        newpos = list(self.current_pos)
-                        newpos[2] += self.z_offset
-                        return newpos
+                        return self.current_pos[0], self.current_pos[1], \
+                            self.current_pos[2] + self.z_offset, \
+                            self.current_pos[3]
             # end of move reached
             self.current_pos[:] = self.next_pos
             self.z_offset = self._calc_z_offset(self.current_pos)

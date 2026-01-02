@@ -49,12 +49,6 @@ class TemplateWrapper:
         self.create_template_context = gcode_macro.create_template_context
         try:
             self.template = env.from_string(script)
-        except jinja2.exceptions.TemplateSyntaxError as e:
-            lines = script.splitlines()
-            msg = "Error loading template '%s'\nline %s: %s # %s" % (
-                name, e.lineno, lines[e.lineno-1], e.message)
-            logging.exception(msg)
-            raise self.gcode.error(msg)
         except Exception as e:
             msg = "Error loading template '%s': %s" % (
                  name, traceback.format_exception_only(type(e), e)[-1])
@@ -178,8 +172,8 @@ class GCodeMacro:
             literal = ast.literal_eval(value)
             json.dumps(literal, separators=(',', ':'))
         except (SyntaxError, TypeError, ValueError) as e:
-            raise gcmd.error("Unable to parse '%s' as a literal: %s in '%s'" %
-                             (value, e, gcmd.get_commandline()))
+            raise gcmd.error("Unable to parse '%s' as a literal: %s" %
+                             (value, e))
         v = dict(self.variables)
         v[variable] = literal
         self.variables = v

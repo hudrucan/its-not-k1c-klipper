@@ -96,7 +96,7 @@ class ADS1220:
             self.printer, self._process_batch, self._start_measurements,
             self._finish_measurements, UPDATE_INTERVAL)
         # Command Configuration
-        self.attach_probe_cmd = None
+        self.config_endstop_cmd = None
         mcu.add_config_cmd(
             "config_ads1220 oid=%d spi_oid=%d data_ready_pin=%s"
             % (self.oid, self.spi.get_oid(), self.data_ready_pin))
@@ -109,8 +109,8 @@ class ADS1220:
         cmdqueue = self.spi.get_command_queue()
         self.query_ads1220_cmd = self.mcu.lookup_command(
             "query_ads1220 oid=%c rest_ticks=%u", cq=cmdqueue)
-        self.attach_probe_cmd = self.mcu.lookup_command(
-            "ads1220_attach_load_cell_probe oid=%c load_cell_probe_oid=%c")
+        self.config_endstop_cmd = self.mcu.lookup_command(
+            "attach_endstop_ads1220 oid=%c load_cell_endstop_oid=%c")
         self.ffreader.setup_query_command("query_ads1220_status oid=%c",
                                           oid=self.oid, cq=cmdqueue)
 
@@ -129,8 +129,8 @@ class ADS1220:
     def add_client(self, callback):
         self.batch_bulk.add_client(callback)
 
-    def attach_load_cell_probe(self, load_cell_probe_oid):
-        self.attach_probe_cmd.send([self.oid, load_cell_probe_oid])
+    def attach_endstop(self, endstop_oid):
+        self.config_endstop_cmd.send_wait_ack([self.oid, endstop_oid])
 
     # Measurement decoding
     def _convert_samples(self, samples):
@@ -208,6 +208,7 @@ class ADS1220:
         write_command.extend(register_bytes)
         self.spi.spi_send(write_command)
         stored_val = self.read_reg(reg, len(register_bytes))
+        logging.info("[0x%x] to %s: got %s" % (reg, hexify(register_bytes), hexify(stored_val)))
         if bytearray(register_bytes) != stored_val:
             raise self.printer.command_error(
                 "Failed to set ADS1220 register [0x%x] to %s: got %s. "

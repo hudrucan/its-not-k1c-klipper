@@ -64,11 +64,7 @@ class BLTouchProbe:
         self.cmd_helper = probe.ProbeCommandHelper(
             config, self, self.mcu_endstop.query_endstop)
         self.probe_offsets = probe.ProbeOffsetsHelper(config)
-        self.param_helper = probe.ProbeParameterHelper(config)
-        self.homing_helper = probe.HomingViaProbeHelper(config, self,
-                                                        self.param_helper)
-        self.probe_session = probe.ProbeSessionHelper(
-            config, self.param_helper, self.homing_helper.start_probe_session)
+        self.probe_session = probe.ProbeSessionHelper(config, self)
         # Register BLTOUCH_DEBUG command
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command("BLTOUCH_DEBUG", self.cmd_BLTOUCH_DEBUG,
@@ -79,7 +75,7 @@ class BLTouchProbe:
         self.printer.register_event_handler("klippy:connect",
                                             self.handle_connect)
     def get_probe_params(self, gcmd=None):
-        return self.param_helper.get_probe_params(gcmd)
+        return self.probe_session.get_probe_params(gcmd)
     def get_offsets(self):
         return self.probe_offsets.get_offsets()
     def get_status(self, eventtime):
@@ -195,6 +191,9 @@ class BLTouchProbe:
         self.verify_raise_probe()
         self.sync_print_time()
         self.multi = 'OFF'
+    def probing_move(self, pos, speed):
+        phoming = self.printer.lookup_object('homing')
+        return phoming.probing_move(self, pos, speed)
     def probe_prepare(self, hmove):
         if self.multi == 'OFF' or self.multi == 'FIRST':
             self.lower_probe()

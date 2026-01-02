@@ -642,9 +642,7 @@ class LoadCellProbeSessionHelper:
             pconfig = config.getsection('printer')
             self.z_position = pconfig.getfloat('minimum_z_position', 0.,
                                                note_valid=False)
-        self.param_helper = probe.ProbeParameterHelper(config)
-        self.homing_helper = probe.HomingViaProbeHelper(config, mcu_probe,
-                                                        self.param_helper)
+        self.homing_helper = probe.HomingViaProbeHelper(config, mcu_probe)
         # Configurable probing speeds
         self.speed = config.getfloat('speed', 5.0, above=0.)
         self.lift_speed = config.getfloat('lift_speed', self.speed, above=0.)
