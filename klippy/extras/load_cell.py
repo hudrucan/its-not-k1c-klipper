@@ -271,6 +271,7 @@ class LoadCellGuidedCalibrationHelper:
 # Optionally blocks execution while collecting with reactor.pause()
 # can collect a minimum n samples or collect until a specific print_time
 # samples returned in [[time],[force],[counts]] arrays for easy processing
+RETRY_DELAY = 0.05  # 20Hz
 class LoadCellSampleCollector:
     def __init__(self, printer, load_cell):
         self._printer = printer
@@ -281,17 +282,9 @@ class LoadCellSampleCollector:
         self.max_time = float("inf")
         self.min_count = float("inf")  # In Python 3.5 math.inf is better
         self.is_started = False
-        self._completion = None
         self._samples = []
         self._errors = 0
         self._overflows = 0
-
-    # move from the started to stopped state and trigger the completion
-    def _notify(self):
-        self.is_started = False
-        if self._completion is not None:
-            self._completion.complete(True)
-            self._completion = None
 
     def _on_samples(self, msg):
         if not self.is_started:
@@ -304,9 +297,9 @@ class LoadCellSampleCollector:
             if self.min_time <= time <= self.max_time:
                 self._samples.append(sample)
             if time > self.max_time:
-                self._notify()
+                self.is_started = False
         if len(self._samples) >= self.min_count:
-            self._notify()
+            self.is_started = False
         return self.is_started
 
     def _finish_collecting(self):
@@ -324,18 +317,14 @@ class LoadCellSampleCollector:
 
     def _collect_until(self, timeout):
         self.start_collecting()
-        # calculate print time delay and convert to reactor time
-        now = self._reactor.monotonic()
-        print_time = self._mcu.estimated_print_time(now)
-        wake_time = now + (timeout - print_time)
-        if self.is_started:
-            self._completion = self._reactor.completion()
-            result = self._completion.wait(waketime=wake_time)
-            if result is None:
+        while self.is_started:
+            now = self._reactor.monotonic()
+            if self._mcu.estimated_print_time(now) > timeout:
                 self._finish_collecting()
                 raise self._printer.command_error(
                     "LoadCellSampleCollector timed out! Errors: %i,"
                     " Overflows: %i" % (self._errors, self._overflows))
+            self._reactor.pause(now + RETRY_DELAY)
         return self._finish_collecting()
 
     # start collecting with no automatic end to collection
@@ -372,6 +361,10 @@ class LoadCellSampleCollector:
 MIN_COUNTS_PER_GRAM = 1.
 class LoadCell:
     def __init__(self, config, sensor):
+        try:
+            import numpy
+        except Exception:
+            raise config.error("LoadCell requires the numpy module")
         self.printer = printer = config.get_printer()
         self.config_name = config.get_name()
         self.name = config.get_name().split()[-1]
