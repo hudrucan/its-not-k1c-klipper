@@ -1581,15 +1581,7 @@ class LoadCellPrinterProbe:
         return status
 
 def load_config(config):
-    printer = config.get_printer()
-    lc_probe = LoadCellPrinterProbe(config)
-    #TODO: for multiple probes this cant be static value 'probe'
-    if len(config.get_name().split()) > 1:
-        chipname = '_'.join(config.get_name().split()[1:])
-    else:
-        chipname = 'probe'
-    printer.add_object(chipname, lc_probe)
-    return lc_probe
+    return LoadCellPrinterProbe(config)
 
 
 def load_config_prefix(config):
