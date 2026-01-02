@@ -44,21 +44,25 @@ class ProbeCommandHelper:
         gcode = self.printer.lookup_object('gcode')
         # QUERY_PROBE command
         self.last_state = False
-        command_prefix = self.prefix.upper()+"_" if hasattr(self, 'prefix') else ""
+        if len(self.name.split())>1:
+            self.prefix = "_".join(self.name.split()[1:])
+        else:
+            self.prefix = ""
+        self.chipname = self.prefix or 'probe'
         gcode.register_command('QUERY_PROBE', self.cmd_QUERY_PROBE,
                                desc=self.cmd_QUERY_PROBE_help)
         # PROBE command
         self.last_z_result = 0.
-        gcode.register_command(command_prefix+'PROBE', self.cmd_PROBE,
+        gcode.register_command(self.prefix.upper()+'_PROBE', self.cmd_PROBE,
                                desc=self.cmd_PROBE_help)
         # PROBE_CALIBRATE command
         self.probe_calibrate_z = 0.
-        gcode.register_command(command_prefix+'PROBE_CALIBRATE', self.cmd_PROBE_CALIBRATE,
+        gcode.register_command(self.prefix.upper()+'_PROBE_CALIBRATE', self.cmd_PROBE_CALIBRATE,
                                desc=self.cmd_PROBE_CALIBRATE_help)
         # Other commands
-        gcode.register_command(command_prefix+'PROBE_ACCURACY', self.cmd_PROBE_ACCURACY,
+        gcode.register_command(self.prefix.upper()+'_PROBE_ACCURACY', self.cmd_PROBE_ACCURACY,
                                desc=self.cmd_PROBE_ACCURACY_help)
-        gcode.register_command(command_prefix+'Z_OFFSET_APPLY_PROBE',
+        gcode.register_command(self.prefix.upper()+'_Z_OFFSET_APPLY_PROBE',
                                self.cmd_Z_OFFSET_APPLY_PROBE,
                                desc=self.cmd_Z_OFFSET_APPLY_PROBE_help)
     def _move(self, coord, speed):
