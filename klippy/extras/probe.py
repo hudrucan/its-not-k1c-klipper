@@ -288,12 +288,12 @@ class ProbeVirtualEndstopDeprecation:
         self._name = config.get_name()
         self._printer = config.get_printer()
         # Register z_virtual_endstop pin
-        if len(self.name.split())>1:
-            self.prefix = "_".join(self.name.split()[1:])
+        if len(self._name.split())>1:
+            self.prefix = "_".join(self._name.split()[1:])
         else:
             self.prefix = ""
-        self.chipname = self.prefix or 'probe'
-        self._printer.lookup_object('pins').register_chip(self.chipname, self)
+        self._chipname = self.prefix or 'probe'
+        self._printer.lookup_object('pins').register_chip(self._chipname, self)
     def setup_pin(self, pin_type, pin_params):
         raise self._printer.config_error(
             "Module [%s] does not support `probe:z_virtual_endstop`"
