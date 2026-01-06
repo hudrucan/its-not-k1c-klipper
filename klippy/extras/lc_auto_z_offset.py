@@ -73,8 +73,8 @@ class AutoZOffsetCalibration:
                 )
     
         # check if a eddy is installed
-        elif config.has_section("probe_eddy_current eddy_probe"):
-            probe = config.getsection('probe_eddy_current eddy_probe')
+        elif config.has_section("probe_eddy_current eddy"):
+            probe = config.getsection('probe_eddy_current eddy')
             self.x_offset = probe.getfloat('x_offset', note_valid=False)
             self.y_offset = probe.getfloat('y_offset', note_valid=False)
             # check if a possible valid offset is set for probe
