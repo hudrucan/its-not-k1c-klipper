@@ -141,7 +141,7 @@ class AutoZOffsetCalibration:
             toolhead.manual_move(
                 [curpos[0] + self.x_offset, curpos[1] + self.y_offset],
                 self.speed)
-        nozzle_session =  self.printer.lookup_object(self.secondary_probe).start_probe_session(gcmd)
+        nozzle_session = self.printer.lookup_object(self.secondary_probe).start_probe_session(gcmd)
         nozzle_session.run_probe(gcmd)
         z_nozzle = nozzle_session.pull_probed_results()[0]
         nozzle_session.end_probe_session()
