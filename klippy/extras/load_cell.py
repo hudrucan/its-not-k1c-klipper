@@ -395,6 +395,12 @@ class LoadCell:
         printer.register_event_handler("klippy:ready", self._handle_ready)
 
     def _handle_ready(self):
+        # Delay sensor start to avoid "reactor pause disabled" error
+        # Use reactor.register_callback to defer until after ready completes
+        reactor = self.printer.get_reactor()
+        reactor.register_callback(self._delayed_start)
+
+    def _delayed_start(self, eventtime):
         self.sensor.add_client(self._sensor_data_event)
         self.add_client(self._track_force)
         # announce calibration status on ready
