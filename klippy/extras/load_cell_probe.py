@@ -395,7 +395,7 @@ class TapAnalysis(object):
 
     # extract and save TrapQueue moves
     def _extract_trapq(self, printer):
-        trapq = printer.lookup_object('motion_report').trapqs['toolhead']
+        trapq = printer.lookup_object('motion_report').dtrapqs['toolhead']
         moves, _ = trapq.extract_trapq(float(self._time[0]),
             float(self._time[-1]))
         for move in moves:
