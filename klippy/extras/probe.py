@@ -50,22 +50,22 @@ class ProbeCommandHelper:
         gcode = self.printer.lookup_object('gcode')
         # QUERY_PROBE command
         self.last_state = False
-        gcode.register_command(f'{self.prefix}_QUERY_PROBE', self.cmd_QUERY_PROBE,
+        gcode.register_command(f'{self.prefix.upper()}_QUERY_PROBE', self.cmd_QUERY_PROBE,
                                desc=self.cmd_QUERY_PROBE_help)
         # PROBE command
         self.last_z_result = 0.
-        gcode.register_command(f'{self.prefix}_PROBE', self.cmd_PROBE,
+        gcode.register_command(f'{self.prefix.upper()}_PROBE', self.cmd_PROBE,
                                desc=self.cmd_PROBE_help)
         # PROBE_CALIBRATE command
         self.probe_calibrate_z = 0.
-        gcode.register_command(f'{self.prefix}_PROBE_CALIBRATE', self.cmd_PROBE_CALIBRATE,
+        gcode.register_command(f'{self.prefix.upper()}_PROBE_CALIBRATE', self.cmd_PROBE_CALIBRATE,
                                desc=self.cmd_PROBE_CALIBRATE_help)
         # Other commands
-        gcode.register_command(f'{self.prefix}_PROBE_ACCURACY', self.cmd_PROBE_ACCURACY,
+        gcode.register_command(f'{self.prefix.upper()}_PROBE_ACCURACY', self.cmd_PROBE_ACCURACY,
                                desc=self.cmd_PROBE_ACCURACY_help)
         if replace_z_offset:
             return
-        gcode.register_command(f'{self.prefix}_Z_OFFSET_APPLY_PROBE',
+        gcode.register_command(f'{self.prefix.upper()}_Z_OFFSET_APPLY_PROBE',
                                self.cmd_Z_OFFSET_APPLY_PROBE,
                                desc=self.cmd_Z_OFFSET_APPLY_PROBE_help)
     def _move(self, coord, speed):
