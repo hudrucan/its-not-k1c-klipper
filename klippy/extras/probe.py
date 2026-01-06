@@ -42,25 +42,30 @@ class ProbeCommandHelper:
         self.probe = probe
         self.query_endstop = query_endstop
         self.name = config.get_name()
+        if len(self.name.split())>1:
+            self.prefix = "_".join(self.name.split()[1:])
+        else:
+            self.prefix = ""
+        self.chipname = self.prefix or 'probe'
         gcode = self.printer.lookup_object('gcode')
         # QUERY_PROBE command
         self.last_state = False
-        gcode.register_command('QUERY_PROBE', self.cmd_QUERY_PROBE,
+        gcode.register_command(f'{self.prefix}_QUERY_PROBE', self.cmd_QUERY_PROBE,
                                desc=self.cmd_QUERY_PROBE_help)
         # PROBE command
         self.last_z_result = 0.
-        gcode.register_command('PROBE', self.cmd_PROBE,
+        gcode.register_command(f'{self.prefix}_PROBE', self.cmd_PROBE,
                                desc=self.cmd_PROBE_help)
         # PROBE_CALIBRATE command
         self.probe_calibrate_z = 0.
-        gcode.register_command('PROBE_CALIBRATE', self.cmd_PROBE_CALIBRATE,
+        gcode.register_command(f'{self.prefix}_PROBE_CALIBRATE', self.cmd_PROBE_CALIBRATE,
                                desc=self.cmd_PROBE_CALIBRATE_help)
         # Other commands
-        gcode.register_command('PROBE_ACCURACY', self.cmd_PROBE_ACCURACY,
+        gcode.register_command(f'{self.prefix}_PROBE_ACCURACY', self.cmd_PROBE_ACCURACY,
                                desc=self.cmd_PROBE_ACCURACY_help)
         if replace_z_offset:
             return
-        gcode.register_command('Z_OFFSET_APPLY_PROBE',
+        gcode.register_command(f'{self.prefix}_Z_OFFSET_APPLY_PROBE',
                                self.cmd_Z_OFFSET_APPLY_PROBE,
                                desc=self.cmd_Z_OFFSET_APPLY_PROBE_help)
     def _move(self, coord, speed):
@@ -210,11 +215,17 @@ class HomingViaProbeHelper:
         self.mcu_probe = mcu_probe
         self.param_helper = param_helper
         self.multi_probe_pending = False
+        self.name = config.get_name()
+        if len(self.name.split()) > 1:
+            self.prefix = "_".join(self.name.split()[1:])
+        else:
+            self.prefix = ""
+        self.chipname = self.prefix or 'probe'
         self.z_min_position = lookup_minimum_z(config)
         self.results = []
         LookupZSteppers(config, self.mcu_probe.add_stepper)
         # Register z_virtual_endstop pin
-        self.printer.lookup_object('pins').register_chip('probe', self)
+        self.printer.lookup_object('pins').register_chip(self.chipname, self)
         # Register event handlers
         self.printer.register_event_handler("homing:homing_move_begin",
                                             self._handle_homing_move_begin)
@@ -278,9 +289,14 @@ class HomingViaProbeHelper:
 class ProbeVirtualEndstopDeprecation:
     def __init__(self, config):
         self._name = config.get_name()
+        if len(self._name.split()) > 1:
+            self._prefix = "_".join(self._name.split()[1:])
+        else:
+            self._prefix = ""
+        self._chipname = self._prefix or 'probe'
         self._printer = config.get_printer()
         # Register z_virtual_endstop pin
-        self._printer.lookup_object('pins').register_chip('probe', self)
+        self._printer.lookup_object('pins').register_chip(self._chipname, self)
     def setup_pin(self, pin_type, pin_params):
         raise self._printer.config_error(
             "Module [%s] does not support `probe:z_virtual_endstop`"
@@ -435,6 +451,11 @@ class ProbePointsHelper:
         self.finalize_callback = finalize_callback
         self.probe_points = default_points
         self.name = config.get_name()
+        if len(self.name.split()) > 1:
+            self.prefix = "_".join(self.name.split()[1:])
+        else:
+            self.prefix = ""
+        self.chipname = self.prefix or 'probe'
         self.gcode = self.printer.lookup_object('gcode')
         # Read config settings
         if default_points is None or config.get('points', None) is not None:
@@ -493,7 +514,7 @@ class ProbePointsHelper:
     def start_probe(self, gcmd):
         manual_probe.verify_no_manual_probe(self.printer)
         # Lookup objects
-        probe = self.printer.lookup_object('probe', None)
+        probe = self.printer.lookup_object(self.chipname, None)
         method = gcmd.get('METHOD', 'automatic').lower()
         def_move_z = self.default_horizontal_move_z
         self.horizontal_move_z = gcmd.get_float('HORIZONTAL_MOVE_Z',

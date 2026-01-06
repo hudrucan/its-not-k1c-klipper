@@ -44,7 +44,8 @@ class AutoZOffsetCalibration:
         self.offset_min = config.getfloat('offset_min', -2)
         self.offset_max = config.getfloat('offset_max', 2)
         self.gcode = self.printer.lookup_object('gcode')
-        self.gcode_move = self.printer.lookup_object('gcode_move')
+        # self.gcode_move = self.printer.lookup_object('gcode_move')
+        self.gcode_move = self.printer.load_object(config, 'gcode_move')
         self.gcode.register_command("LC_AUTO_Z_OFFSET",
                                     self.cmd_AUTO_Z_OFFSET,
                                     desc=self.cmd_AUTO_Z_OFFSET_help)
@@ -70,6 +71,18 @@ class AutoZOffsetCalibration:
                 raise config.error(
                     "LC_AutoZOffset: Check the x and y offset from [probe] - it seems both are 0 and the Probe can't be at the same position as the nozzle :-)"
                 )
+    
+        # check if a eddy is installed
+        elif config.has_section("probe_eddy_current eddy_probe"):
+            probe = config.getsection('probe_eddy_current eddy_probe')
+            self.x_offset = probe.getfloat('x_offset', note_valid=False)
+            self.y_offset = probe.getfloat('y_offset', note_valid=False)
+            # check if a possible valid offset is set for probe
+            if ((self.x_offset == 0) and (self.y_offset == 0)):
+                raise config.error(
+                    "LC_AutoZOffset: Check the x and y offset from [probe] - it seems both are 0 and the Probe can't be at the same position as the nozzle :-)"
+                )
+
         else:
             raise config.error(
                 "LC_AutoZOffset: No bltouch or probe in configured in your system - check your setup."
@@ -112,7 +125,10 @@ class AutoZOffsetCalibration:
                 self.center_x_pos - self.x_offset,
                 self.center_y_pos - self.y_offset
             ], self.speed)
-        z_probe = self.printer.lookup_object('probe').run_probe(gcmd)
+        main_session = self.printer.lookup_object('probe').start_probe_session(gcmd)
+        main_session.run_probe(gcmd)
+        z_probe = main_session.pull_probed_results()[0]
+        main_session.end_probe_session()
         # Perform Z Hop
         if self.z_hop:
             toolhead.manual_move([None, None, self.z_hop], self.z_hop_speed)
@@ -125,9 +141,10 @@ class AutoZOffsetCalibration:
             toolhead.manual_move(
                 [curpos[0] + self.x_offset, curpos[1] + self.y_offset],
                 self.speed)
-
-        z_nozzle = self.printer.lookup_object(
-            self.secondary_probe).run_probe(gcmd)
+        nozzle_session =  self.printer.lookup_object(self.secondary_probe).start_probe_session(gcmd)
+        nozzle_session.run_probe(gcmd)
+        z_nozzle = nozzle_session.pull_probed_results()[0]
+        nozzle_session.end_probe_session()
         # Perform Z Hop
         if self.z_hop:
             toolhead.manual_move([None, None, self.z_hop], self.z_hop_speed)
@@ -198,3 +215,4 @@ class AutoZOffsetCalibration:
 
 def load_config(config):
     return AutoZOffsetCalibration(config)
+    

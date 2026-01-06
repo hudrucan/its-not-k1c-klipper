@@ -1520,7 +1520,7 @@ class LoadCellPrinterProbe:
         # Read all user configuration and build modules
         tap_classifier = self._lookup_object(config, 'tap_classifier_module',
             TapClassifierModule())
-        name = config.get_name()
+        name = config.get_name().split()[-1]
         self._tap_analysis_helper = TapAnalysisHelper(self._printer, name,
             tap_classifier)
         nozzle_cleaner = self._lookup_object(config, 'nozzle_cleaner_module',
@@ -1549,7 +1549,11 @@ class LoadCellPrinterProbe:
         # printer integration
         LoadCellProbeCommands(config, load_cell_probing_move, tap_session)
         probe.ProbeVirtualEndstopDeprecation(config)
-        self._printer.add_object('probe', self)
+        if len(config.get_name().split())>1:
+            chipname = '_'.join(config.get_name().split()[1:])
+        else:
+            chipname = 'probe'
+        self._printer.add_object(chipname, self)
 
     def _lookup_object(self, config, key, default):
         config_section_name = config.get(key, default=None)
@@ -1579,4 +1583,6 @@ class LoadCellPrinterProbe:
 
 def load_config(config):
     return LoadCellPrinterProbe(config)
-    
+
+def load_config_prefix(config):
+    return load_config(config)
