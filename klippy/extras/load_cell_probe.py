@@ -880,7 +880,7 @@ class LoadCellProbeConfigHelper:
         self._trigger_force_param = intParamHelper(config, 'trigger_force',
             default=75, minval=10, maxval=250)
         self._force_safety_limit_param = intParamHelper(config,
-            'force_safety_limit', minval=100, maxval=5000, default=2000)
+            'force_safety_limit', minval=100, maxval=10000, default=2000)
         # pullback move
         self._pullback_distance_param = floatParamHelper(config,
             'pullback_distance', minval=0.01, maxval=2.0, default=0.2)
